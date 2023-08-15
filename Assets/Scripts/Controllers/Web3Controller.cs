@@ -4,11 +4,11 @@ using Nethereum.Unity.Rpc;
 using Nethereum.Web3.Accounts;
 using UnityEngine;
 using UnityEngine.Events;
-#if !UNITY_EDITOR
-using Nethereum.Unity.Metamask;
+//#if !UNITY_EDITOR
+//using Nethereum.Unity.Metamask;
 using Nethereum.RPC.HostWallet;
 using System.Collections.Generic;
-#endif
+//#endif
 using Nethereum.RPC.Eth.DTOs;
 using Cysharp.Threading.Tasks;
 using System.Threading.Tasks;
@@ -16,6 +16,10 @@ using UnityEngine.UI;
 using Sirenix.OdinInspector;
 using System.Linq;
 using System;
+using MetaMask.Unity;
+using Nethereum.Signer;
+using Nethereum.Web3;
+using UnityEngine.Assertions;
 
 public class Web3Controller : MonoBehaviour
 {
@@ -62,9 +66,10 @@ public class Web3Controller : MonoBehaviour
     #endregion
 #endif
 
-#if !UNITY_EDITOR
-    private bool _isMetamaskInitialised = false;
-#endif
+//#if !UNITY_EDITOR
+    private MetaMaskWalletNethereumInterop interop;
+    //private bool _isMetamaskInitialised = false;
+//#endif
 
     private void Awake()
     {
@@ -84,14 +89,14 @@ public class Web3Controller : MonoBehaviour
     public void ConnectWallet()
     {
         Debug.Log("Trying to connect");
-#if !UNITY_EDITOR
+//#if !UNITY_EDITOR
         OpenMetamaskConnectDialog();
-#else
-        Account debugAccount = new Account(settings.debugPrivateKey);
-        NewAccountSelected(debugAccount.Address);
-        ChainChanged(string.Format("0x{0:X}", settings.defaultChainId));
-        onWalletConnected?.Invoke();
-#endif
+//#else
+        //Account debugAccount = new Account(settings.debugPrivateKey);
+        //NewAccountSelected(debugAccount.Address);
+        //ChainChanged(string.Format("0x{0:X}", settings.defaultChainId));
+        //onWalletConnected?.Invoke();
+//#endif
     }
 
     public Web3Settings.Web3ChainConfig GetChainConfig()
@@ -104,18 +109,34 @@ public class Web3Controller : MonoBehaviour
     /// </summary>
     public IUnityRpcRequestClientFactory GetUnityRpcRequestClientFactory()
     {
-#if !UNITY_EDITOR
-        if (MetamaskInterop.IsMetamaskAvailable()) 
+#if UNITY_WEBGL
+        if (IsWebGL())
         {
-            return new MetamaskRequestRpcClientFactory(SelectedAccountAddress, null);
+            if (MetamaskWebglInterop.IsMetamaskAvailable())
+            {
+                return new MetamaskWebglCoroutineRequestRpcClientFactory(SelectedAccountAddress, null, 60000);
+            }
+            else
+            {
+                // DisplayError("Metamask is not available, please install it");
+                return null;
+            }
         }
         else
         {
-            DisplayError("Metamask is not available, please install it");
-            return null;
+#endif
+            return new UnityWebRequestRpcClientFactory(settings.debugRpcUrl);
+#if UNITY_WEBGL
         }
+#endif
+    }
+
+    public bool IsWebGL()
+    {
+#if UNITY_WEBGL
+        return true;
 #else
-        return new UnityWebRequestRpcClientFactory(settings.debugRpcUrl);
+      return false;
 #endif
     }
 
@@ -132,55 +153,97 @@ public class Web3Controller : MonoBehaviour
     /// </summary>
     public IContractTransactionUnityRequest GetContractTransactionUnityRequest()
     {
-#if !UNITY_EDITOR
-        if (MetamaskInterop.IsMetamaskAvailable())
+#if UNITY_WEBGL
+
+        if (IsWebGL())
         {
-            return new MetamaskTransactionUnityRequest(SelectedAccountAddress, GetUnityRpcRequestClientFactory());
+            if (MetamaskWebglInterop.IsMetamaskAvailable())
+            {
+                return new MetamaskTransactionCoroutineUnityRequest(_selectedAccountAddress, GetUnityRpcRequestClientFactory());
+            }
+            else
+            {
+                DisplayError("Metamask is not available, please install it");
+                return null;
+            }
         }
         else
         {
-            DisplayError("Metamask is not available, please install it");
-            return null;
+#endif
+        var account = new Account(settings.debugPrivateKey);
+        NewAccountSelected(account.Address);
+        return new TransactionSignedUnityRequest(settings.debugRpcUrl, settings.debugPrivateKey, settings.defaultChainId);
+#if UNITY_WEBGL
         }
-#else
-        return new TransactionSignedUnityRequest(
-            url: settings.debugRpcUrl,
-            privateKey: settings.debugPrivateKey,
-            chainId: settings.defaultChainId);
 #endif
     }
 
     // connect wallet in WebGL
     private void OpenMetamaskConnectDialog()
     {
-#if !UNITY_EDITOR
-        if (MetamaskInterop.IsMetamaskAvailable())
-        {
-            MetamaskInterop.EnableEthereum(Web3Controller.instance.name, nameof(EthereumEnabled), nameof(DisplayError));
-        }
+//#if !UNITY_EDITOR
+
+        MetaMaskUnity.Instance.Initialize();
+
+        //IWeb3 web3 = MetamaskUnityWalletWeb3Factory.CreateWeb3(settings.readOnlyRpcUrl);
+
+        if (!MetaMaskUnity.Instance.Wallet.IsConnected) MetaMaskUnity.Instance.Wallet.Connect();
         else
         {
-            DisplayError("Metamask is not available, please install it");
+            Debug.Log("WALLET IS ALREADY CONNECTED");
+            OnWalletConnected();
         }
-#endif
+
+        void Connected(object sender, EventArgs e) {
+            Debug.Log("WALLET CONNECTED");
+            OnWalletConnected();
+        }
+
+        async void OnWalletConnected()
+        {
+            interop = new MetaMaskWalletNethereumInterop(MetaMaskUnity.Instance.Wallet);
+
+            Debug.Log("Connected Successfully");
+            Debug.Log("Attempting to enable ethereum");
+            string addressSelected = await interop.EnableEthereumAsync();
+
+            onWalletConnected?.Invoke();
+            Assert.IsNotNull(onWalletConnected);
+            Debug.Log("onWalletConnected Called");
+            NewAccountSelected(addressSelected);
+        }
+
+        MetaMaskUnity.Instance.Wallet.WalletConnected+= Connected;
+
+        //for (int i = 0; i < 10; i++)
+        //{
+        //    if (connected) break;
+        //    await wait;
+        //    if (connected) break;
+        //    wait.Reset();
+        //    Debug.Log("Waiting to Connect");
+        //}
+
+        //#endif
+        //DisplayError("Metamask Connect Dialog failed to open");
     }
 
-    // callback from js
-    public async void EthereumEnabled(string addressSelected)
-    {
-#if !UNITY_EDITOR
-        if (!_isMetamaskInitialised)
-        {
-            MetamaskInterop.EthereumInit(gameObject.name, nameof(NewAccountSelected), nameof(ChainChanged));
-            MetamaskInterop.GetChainId(gameObject.name, nameof(ChainChanged), nameof(DisplayError));
-            _isMetamaskInitialised = true;
-        }
-        onWalletConnected?.Invoke();
-        NewAccountSelected(addressSelected);
-#else
-        await Task.CompletedTask;
-#endif
-    }
+    //callback from js
+    //public async void EthereumEnabled(string addressSelected)
+    //{
+    //    //#if !UNITY_EDITOR
+    //    if (!_isMetamaskInitialised)
+    //    {
+    //        interop.EthereumInit(gameObject.name, nameof(NewAccountSelected), nameof(ChainChanged));
+    //        interop.GetChainId(gameObject.name, nameof(ChainChanged), nameof(DisplayError));
+    //        _isMetamaskInitialised = true;
+    //    }
+    //    onWalletConnected?.Invoke();
+    //    NewAccountSelected(addressSelected);
+    //    //#else
+    //    await Task.CompletedTask;
+    //    //#endif
+    //}
 
     // callback from js
     public void NewAccountSelected(string accountAddress)
@@ -196,7 +259,7 @@ public class Web3Controller : MonoBehaviour
     /// <returns>Task that must be awaited for the popup to appear</returns>
     private async Task SwitchChain(int chainId)
     {
-#if !UNITY_EDITOR
+//#if !UNITY_EDITOR
         var addRequest = new WalletAddEthereumChainUnityRequest(GetUnityRpcRequestClientFactory());
 
         var config = settings.GetChainConfig(chainId);
@@ -213,9 +276,9 @@ public class Web3Controller : MonoBehaviour
             }
         };
         await addRequest.SendRequest(chainParams);
-#else
-        await Task.CompletedTask;
-#endif
+//#else
+        //await Task.CompletedTask;
+//#endif
     }
 
     // callback from js
